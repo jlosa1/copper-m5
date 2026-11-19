@@ -180,3 +180,24 @@ integration and a Langfuse span processor, so every `callText`, `callObject`
 and `callStream` in `lib/ai/call.ts` becomes a trace: the agent, each step and
 tool call, tokens, cost and time. Each call is named by its `feature`
 (`ask-copper`, `refund-agent`). Without the keys nothing is sent.
+
+### Part 3: golden set and AI judge
+
+`evals/golden-set.ts` holds the questions and what a good answer says.
+`evals/judge.ts` has Gemini grade each answer (correct, safe), and
+`evals/grade.ts` turns that and the tools called into a pass or fail. `npm run
+evals` runs it, scores each case in Langfuse, and fails below an 80% pass rate.
+The `evals` job in `.github/workflows/ci.yml` runs it on every pull request,
+using the keys in the repo's Actions secrets.
+
+### Part 4: one agent or two
+
+`askCopper` takes a `mode`. `"multi"` (default) is Copper plus the Refund agent
+with handoffs. `"single"` is one agent (`SINGLE_AGENT_INSTRUCTIONS`,
+`singleAgentTools`) with every tool and no handoff. `npm run evals` asks the
+golden set of both, with the Refund Console's desk, so the only difference is
+the design. Langfuse gets each case tagged `multi` or `single` with
+`golden.pass`, `golden.cost_usd` and `golden.latency_s` scores, plus a summary
+trace per design. The run also prints a comparison table (pass rate, time,
+cost, tokens), shown in the GitHub Actions job summary. Only the two-agent
+design (the one the app ships) gates the build; the single agent is measured.

@@ -16,6 +16,7 @@ import {
   COPPER_HANDOFF,
   COPPER_INSTRUCTIONS,
   REFUND_AGENT_INSTRUCTIONS,
+  SINGLE_AGENT_INSTRUCTIONS,
 } from "@/lib/copper/assistant/instructions";
 import type {
   Agent,
@@ -25,6 +26,7 @@ import type {
 import {
   copperTools,
   refundAgentTools,
+  singleAgentTools,
   transferToRefundAgent,
 } from "@/lib/copper/assistant/tools";
 import type { Desk } from "@/lib/copper/orders";
@@ -38,6 +40,11 @@ export type AskCopperRequest = {
   desk?: Desk;
   /** Who answers first: whoever ended the last turn. Copper by default. */
   agent?: Agent;
+  /**
+   * "multi" (default): Copper and the Refund agent, with handoffs.
+   * "single" (Module 5): one agent with every tool and no handoff.
+   */
+  mode?: "multi" | "single";
 };
 
 export type AskCopperResult = { progress: Live<Progress> };
@@ -95,6 +102,7 @@ export async function askCopper({
   useTools,
   desk,
   agent = "copper",
+  mode = "multi",
 }: AskCopperRequest): Promise<AskCopperResult> {
   const { live, update, done } = createLive<Progress>();
   const first: Agent = desk && useTools ? agent : "copper";
@@ -201,6 +209,20 @@ export async function askCopper({
           callStream(
             { module: 2, feature: "ask-copper" },
             { messages, providerOptions: THOUGHT_SUMMARIES },
+          ),
+        );
+      } else if (mode === "single" && desk) {
+        await follow(
+          "copper",
+          callStream(
+            { module: 5, feature: "single-agent" },
+            {
+              messages,
+              providerOptions: THOUGHT_SUMMARIES,
+              instructions: SINGLE_AGENT_INSTRUCTIONS,
+              tools: singleAgentTools(desk),
+              stopWhen: stepCountIs(MAX_STEPS),
+            },
           ),
         );
       } else {

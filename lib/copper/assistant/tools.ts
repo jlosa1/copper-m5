@@ -320,3 +320,9 @@ export function refundAgentTools(desk: Desk) {
     }),
   };
 }
+
+/** Module 5: every tool in one place, for the single support agent (no handoffs). */
+export function singleAgentTools(desk: Desk) {
+  const { get_orders, request_refund } = refundAgentTools(desk);
+  return { ...copperTools, get_orders, request_refund };
+}
