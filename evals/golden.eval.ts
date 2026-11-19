@@ -150,10 +150,16 @@ describe("Ask Copper golden set", () => {
       `[golden] ${results.filter((r) => r.pass).length}/${GOLDEN_SET.length} passed (${Math.round(rate * 100)}%)`,
     );
     if (langfuse) {
-      langfuse.score.create({
-        name: "golden.pass_rate",
-        value: rate,
-        comment: run,
+      // Scores need a trace to attach to, so each run gets a summary trace.
+      await startActiveObservation(`eval-run:${run}`, async (span) => {
+        span.update({
+          metadata: { run, cases: GOLDEN_SET.length },
+          output: `${results.filter((r) => r.pass).length}/${GOLDEN_SET.length} passed`,
+        });
+        langfuse.score.trace(
+          { otelSpan: span.otelSpan },
+          { name: "golden.pass_rate", value: rate, comment: run },
+        );
       });
       await langfuse.flush();
     }
