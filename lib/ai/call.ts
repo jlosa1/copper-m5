@@ -95,6 +95,11 @@ function rowFor(info: CallInfo, model: ModelId, started: number) {
   };
 }
 
+/** Names the call in Langfuse: the feature (which agent) and module. */
+function traceInfo(info: CallInfo) {
+  return { functionId: info.feature, metadata: { module: info.module } };
+}
+
 async function tracked<T extends { usage: Usage }>(
   info: CallInfo,
   run: (model: ModelId) => Promise<T>,
@@ -114,7 +119,11 @@ async function tracked<T extends { usage: Usage }>(
 /** Generates text. Example: callText({ module: 3, feature: "support-answer" }, { prompt }) */
 export async function callText(info: CallInfo, options: TextOptions) {
   return tracked(info, (model) =>
-    generateText({ ...options, model: languageModel(model) }),
+    generateText({
+      ...options,
+      model: languageModel(model),
+      telemetry: traceInfo(info),
+    }),
   );
 }
 
@@ -129,6 +138,7 @@ export async function callObject<Schema extends z.ZodType>(
       ...rest,
       model: languageModel(model),
       output: Output.object({ schema }),
+      telemetry: traceInfo(info),
     }),
   );
   // Spreading `rest` loses generateText's output type; Output.object has
@@ -190,6 +200,7 @@ export function callStream(info: CallInfo, options: StreamOptions) {
   return streamText({
     ...options,
     model: languageModel(model),
+    telemetry: traceInfo(info),
     onFinish: ({ totalUsage }) => logCall(row(true, totalUsage)),
     onError: () => logCall(row(false)),
   });

@@ -171,3 +171,12 @@ the tests and a golden-set evaluation with an AI judge run in GitHub Actions
 on every pull request, with `main` protected; every AI call is traced in
 Langfuse; and one support agent that does everything is compared with the two
 agents on the same golden set. Langfuse is the only eval and monitoring tool.
+
+### Part 2: tracing with Langfuse
+
+`instrumentation.ts` runs when the server starts. If `LANGFUSE_PUBLIC_KEY` and
+`LANGFUSE_SECRET_KEY` are set, it registers the AI SDK's OpenTelemetry
+integration and a Langfuse span processor, so every `callText`, `callObject`
+and `callStream` in `lib/ai/call.ts` becomes a trace: the agent, each step and
+tool call, tokens, cost and time. Each call is named by its `feature`
+(`ask-copper`, `refund-agent`). Without the keys nothing is sent.
