@@ -42,54 +42,107 @@ if (langfuseOn) {
   provider = nodeProvider;
 }
 
+// The free Gemini tier allows only a few requests per minute, so pace the
+// cases and retry one that hit the limit instead of grading an error message.
+const PACE_MS = Number(process.env.EVAL_PACE_MS ?? 10_000);
+const RETRY_WAIT_MS = Number(process.env.EVAL_RETRY_WAIT_MS ?? 30_000);
+const ATTEMPTS = 3;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type CaseResult = {
+  graded: Scores;
+  reason: string;
+  answer: string;
+  broken: boolean;
+};
+
+async function attempt(
+  golden: (typeof GOLDEN_SET)[number],
+  number: number,
+): Promise<CaseResult> {
+  return startActiveObservation(`eval:${golden.id}`, async (span) => {
+    span.update({
+      input: golden.question,
+      metadata: { run, case: golden.id, attempt: number },
+    });
+    const { progress } = await askCopper({
+      messages: [{ role: "user", content: golden.question }],
+      useTools: true,
+      desk: golden.desk,
+    });
+    const final = await finalValue(progress);
+    // An errored answer (usually a rate limit) isn't a bad answer: retry it.
+    if (final.status === "error")
+      return {
+        graded: { correct: 0, safe: 0, tools: 0, pass: 0 },
+        reason: "Copper hit an error before it could answer.",
+        answer: final.reply,
+        broken: true,
+      };
+    const tools = toolCallsOf(final).map((call) => call.name);
+    const verdict = await judge({
+      question: golden.question,
+      expected: golden.expected,
+      answer: final.reply,
+    });
+    const graded = gradeCase(golden, tools, verdict);
+    span.update({
+      output: final.reply,
+      metadata: {
+        run,
+        case: golden.id,
+        attempt: number,
+        tools,
+        reason: verdict.reason,
+      },
+    });
+    if (langfuse)
+      for (const [name, value] of Object.entries(graded))
+        langfuse.score.trace(
+          { otelSpan: span.otelSpan },
+          {
+            name: `golden.${name}`,
+            value,
+            comment: name === "pass" ? verdict.reason : undefined,
+          },
+        );
+    return {
+      graded,
+      reason: verdict.reason,
+      answer: final.reply,
+      broken: false,
+    };
+  });
+}
+
 describe("Ask Copper golden set", () => {
-  for (const golden of GOLDEN_SET) {
-    it(golden.id, { timeout: 120_000 }, async () => {
-      const scores = await startActiveObservation(
-        `eval:${golden.id}`,
-        async (span) => {
-          span.update({
-            input: golden.question,
-            metadata: { run, case: golden.id },
-          });
-          const { progress } = await askCopper({
-            messages: [{ role: "user", content: golden.question }],
-            useTools: true,
-            desk: golden.desk,
-          });
-          const final = await finalValue(progress);
-          const tools = toolCallsOf(final).map((call) => call.name);
-          const verdict = await judge({
-            question: golden.question,
-            expected: golden.expected,
-            answer: final.reply,
-          });
-          const graded = gradeCase(golden, tools, verdict);
-          span.update({
-            output: final.reply,
-            metadata: { run, case: golden.id, tools, reason: verdict.reason },
-          });
-          if (langfuse)
-            for (const [name, value] of Object.entries(graded))
-              langfuse.score.trace(
-                { otelSpan: span.otelSpan },
-                {
-                  name: `golden.${name}`,
-                  value,
-                  comment: name === "pass" ? verdict.reason : undefined,
-                },
-              );
-          return { graded, reason: verdict.reason, answer: final.reply };
-        },
-      );
-      results.push(scores.graded);
+  GOLDEN_SET.forEach((golden, index) => {
+    it(golden.id, { timeout: 300_000 }, async () => {
+      if (index > 0) await sleep(PACE_MS);
+      let result: CaseResult | undefined;
+      for (let n = 1; n <= ATTEMPTS; n++) {
+        try {
+          result = await attempt(golden, n);
+        } catch (error) {
+          result = {
+            graded: { correct: 0, safe: 0, tools: 0, pass: 0 },
+            reason: `The call failed: ${error instanceof Error ? error.message.slice(0, 120) : String(error)}`,
+            answer: "",
+            broken: true,
+          };
+        }
+        if (!result.broken) break;
+        if (n < ATTEMPTS) await sleep(RETRY_WAIT_MS);
+      }
+      const final = result!;
+      results.push(final.graded);
       // One miss doesn't fail the run: the pass-rate test below is the gate.
-      if (!scores.graded.pass)
+      if (!final.graded.pass)
         console.warn(
-          `[golden] FAILED ${golden.id}: ${scores.reason}\nAnswer: ${scores.answer}`,
+          `[golden] FAILED ${golden.id}: ${final.reason}\nAnswer: ${final.answer}`,
         );
     });
-  }
+  });
 
   afterAll(async () => {
     const rate = passRate(results);
