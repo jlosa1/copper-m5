@@ -42,3 +42,28 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  # The golden-set evaluation: Ask Copper answers each question, an AI judge
+  # grades the answers, and the scores go to Langfuse. Fails below the pass
+  # rate set in evals/grade.ts. Keys come from the repo's Actions secrets.
+  evals:
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+      EVAL_RUN_NAME: ci-${{ github.run_id }}
+    steps:
+      - name: Check the keys are set
+        run: |
+          for name in GOOGLE_GENERATIVE_AI_API_KEY LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASE_URL; do
+            if [ -z "${!name}" ]; then echo "::error::Add $name to this repo's Actions secrets"; exit 1; fi
+          done
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run evals
