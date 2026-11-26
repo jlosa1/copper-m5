@@ -29,6 +29,12 @@ const VARIANTS = (process.env.EVAL_VARIANTS ?? "multi,single")
   .split(",")
   .filter((v): v is Variant => v === "multi" || v === "single");
 
+// EVAL_ONLY=<case id> runs just that question. EVAL_SHARE=<case id> also makes
+// that case's trace public in Langfuse (multi design) and writes its link to
+// EVAL_SHARE_FILE, so one conversation can be shared. Both are off in CI.
+const ONLY = process.env.EVAL_ONLY;
+const SHARE = process.env.EVAL_SHARE;
+
 const run = process.env.EVAL_RUN_NAME ?? `golden-${new Date().toISOString()}`;
 const langfuseOn = Boolean(
   process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY,
@@ -40,7 +46,8 @@ const DESK: Desk = { limitUsd: DEFAULT_LIMIT_USD, refunds: [] };
 
 // Send every AI call to Langfuse, and keep a client for the scores.
 const { LangfuseClient } = await import("@langfuse/client");
-const { startActiveObservation } = await import("@langfuse/tracing");
+const { startActiveObservation, setActiveTraceAsPublic, getActiveTraceId } =
+  await import("@langfuse/tracing");
 const langfuse = langfuseOn ? new LangfuseClient() : undefined;
 let provider: { forceFlush(): Promise<void> } | undefined;
 if (langfuseOn) {
@@ -133,6 +140,12 @@ async function attempt(
         input: golden.question,
         metadata: { run, case: golden.id, variant, attempt: number },
       });
+      if (SHARE === golden.id && variant === "multi") {
+        setActiveTraceAsPublic();
+        const traceId = getActiveTraceId();
+        if (traceId && process.env.EVAL_SHARE_FILE)
+          appendFileSync(process.env.EVAL_SHARE_FILE, `${traceId}\n`);
+      }
       captured = [];
       const started = performance.now();
       const { progress } = await askCopper({
@@ -209,33 +222,35 @@ async function attempt(
 
 for (const variant of VARIANTS) {
   describe(`Ask Copper golden set: ${variant} agent`, () => {
-    GOLDEN_SET.forEach((golden, index) => {
-      it(golden.id, { timeout: 300_000 }, async () => {
-        if (index > 0) await sleep(PACE_MS);
-        let result: CaseResult | undefined;
-        for (let n = 1; n <= ATTEMPTS; n++) {
-          try {
-            result = await attempt(golden, variant, n);
-          } catch (error) {
-            result = {
-              ...BROKEN,
-              reason: `The call failed: ${error instanceof Error ? error.message.slice(0, 120) : String(error)}`,
-              answer: "",
-            };
+    GOLDEN_SET.filter((g) => !ONLY || g.id === ONLY).forEach(
+      (golden, index) => {
+        it(golden.id, { timeout: 300_000 }, async () => {
+          if (index > 0) await sleep(PACE_MS);
+          let result: CaseResult | undefined;
+          for (let n = 1; n <= ATTEMPTS; n++) {
+            try {
+              result = await attempt(golden, variant, n);
+            } catch (error) {
+              result = {
+                ...BROKEN,
+                reason: `The call failed: ${error instanceof Error ? error.message.slice(0, 120) : String(error)}`,
+                answer: "",
+              };
+            }
+            if (!result.broken) break;
+            if (n < ATTEMPTS) await sleep(RETRY_WAIT_MS);
           }
-          if (!result.broken) break;
-          if (n < ATTEMPTS) await sleep(RETRY_WAIT_MS);
-        }
-        const final = result!;
-        totals[variant].scores.push(final.graded);
-        totals[variant].results.push(final);
-        // One miss doesn't fail the run: the pass-rate test is the gate.
-        if (!final.graded.pass)
-          console.warn(
-            `[golden] FAILED ${variant}/${golden.id}: ${final.reason}\nAnswer: ${final.answer}`,
-          );
-      });
-    });
+          const final = result!;
+          totals[variant].scores.push(final.graded);
+          totals[variant].results.push(final);
+          // One miss doesn't fail the run: the pass-rate test is the gate.
+          if (!final.graded.pass)
+            console.warn(
+              `[golden] FAILED ${variant}/${golden.id}: ${final.reason}\nAnswer: ${final.answer}`,
+            );
+        });
+      },
+    );
   });
 }
 
