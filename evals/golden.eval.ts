@@ -55,7 +55,12 @@ if (langfuseOn) {
   const { OpenTelemetry } = await import("@ai-sdk/otel");
   const { LangfuseSpanProcessor } = await import("@langfuse/otel");
   const { NodeTracerProvider } = await import("@opentelemetry/sdk-trace-node");
+  // Name the service, or it is named after the path of the node program.
+  const { resourceFromAttributes } = await import("@opentelemetry/resources");
   const nodeProvider = new NodeTracerProvider({
+    resource: resourceFromAttributes({
+      "service.name": "copper-state-labs-evals",
+    }),
     spanProcessors: [new LangfuseSpanProcessor()],
   });
   nodeProvider.register();
