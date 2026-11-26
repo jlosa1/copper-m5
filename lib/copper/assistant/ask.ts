@@ -9,6 +9,7 @@
 // talking. Copper can hand the conversation to the Refund agent, a second
 // agent with its own instructions and tools, and the Refund agent can hand it
 // back. The agent that ends the turn answers the next message too.
+import { startActiveObservation } from "@langfuse/tracing";
 import { hasToolCall, stepCountIs } from "ai";
 import { callStream, THOUGHT_SUMMARIES } from "@/lib/ai/call";
 import { createLive, type Live } from "@/lib/ai/live";
@@ -18,10 +19,11 @@ import {
   REFUND_AGENT_INSTRUCTIONS,
   SINGLE_AGENT_INSTRUCTIONS,
 } from "@/lib/copper/assistant/instructions";
-import type {
-  Agent,
-  Progress,
-  ToolStep,
+import {
+  AGENT_NAMES,
+  type Agent,
+  type Progress,
+  type ToolStep,
 } from "@/lib/copper/assistant/progress";
 import {
   copperTools,
@@ -126,8 +128,25 @@ export async function askCopper({
         step.type === "tool" && step.id === `${call}:${id}`,
     );
 
+  /**
+   * Runs one agent's turn inside a Langfuse observation named after it, so a
+   * trace shows which agent (Copper, the Refund agent or the single agent)
+   * made each model call and tool call. Does nothing without Langfuse set up.
+   */
+  function follow(
+    current: Agent,
+    make: () => ReturnType<typeof callStream>,
+    label: string = AGENT_NAMES[current],
+  ): Promise<Agent | undefined> {
+    return startActiveObservation(
+      `agent: ${label}`,
+      async () => readAgent(current, make()),
+      { asType: "agent" },
+    );
+  }
+
   /** Reads one agent's stream into progress. Returns who to hand off to. */
-  async function follow(
+  async function readAgent(
     current: Agent,
     result: ReturnType<typeof callStream>,
   ): Promise<Agent | undefined> {
@@ -204,8 +223,7 @@ export async function askCopper({
       if (!useTools) {
         // Without tools, send no instructions either: "always use your
         // tools" with no tools makes the model answer with nothing.
-        await follow(
-          "copper",
+        await follow("copper", () =>
           callStream(
             { module: 2, feature: "ask-copper" },
             { messages, providerOptions: THOUGHT_SUMMARIES },
@@ -214,22 +232,23 @@ export async function askCopper({
       } else if (mode === "single" && desk) {
         await follow(
           "copper",
-          callStream(
-            { module: 5, feature: "single-agent" },
-            {
-              messages,
-              providerOptions: THOUGHT_SUMMARIES,
-              instructions: SINGLE_AGENT_INSTRUCTIONS,
-              tools: singleAgentTools(desk),
-              stopWhen: stepCountIs(MAX_STEPS),
-            },
-          ),
+          () =>
+            callStream(
+              { module: 5, feature: "single-agent" },
+              {
+                messages,
+                providerOptions: THOUGHT_SUMMARIES,
+                instructions: SINGLE_AGENT_INSTRUCTIONS,
+                tools: singleAgentTools(desk),
+                stopWhen: stepCountIs(MAX_STEPS),
+              },
+            ),
+          "Single agent",
         );
       } else {
         let current = first;
         for (let handoffs = 0; ; handoffs++) {
-          const next = await follow(
-            current,
+          const next = await follow(current, () =>
             agentCall(current, messages, desk),
           );
           if (!next || next === current || handoffs >= MAX_HANDOFFS) break;
